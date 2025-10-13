@@ -1,0 +1,16 @@
+services:
+  whisper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: eloquence-endpoint:latest
+    volumes:
+      - ./src:/app
+    working_dir: /app
+    ports:
+      - "8080:8080"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    entrypoint: ["python3", "whisper_api_python.py"]
+    # entrypoint: ["python3", "openai_woz_api.py"]
+    restart: unless-stopped
