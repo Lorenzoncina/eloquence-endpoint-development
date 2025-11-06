@@ -8,9 +8,9 @@ import whisperx
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 
 
-device = "cuda"
+device = "cpu"
 batch_size = 16
-compute_type = "float16"
+compute_type = "int8"
 
 model = whisperx.load_model("large-v2", device, compute_type=compute_type)
 
