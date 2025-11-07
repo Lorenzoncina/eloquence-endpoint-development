@@ -17,6 +17,6 @@ services:
       # This combines the base image's NVIDIA paths with the CUDA path.
       - LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
     
-    entrypoint: ["python3", "whisper_api_python.py"]
-    # entrypoint: ["python3", "openai_woz_api.py"]
+    #entrypoint: ["python3", "whisper_api_python.py"]
+    entrypoint: ["python3", "slam_llm_api.py"]
     restart: unless-stopped

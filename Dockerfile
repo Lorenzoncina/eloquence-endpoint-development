@@ -1,37 +1,25 @@
-FROM ghcr.io/huggingface/text-generation-inference:3.3.6
+# 1. Use the SLAM-LLM base image, which has the correct CUDA/PyTorch environment
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 
-# 1. Merged APT dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ffmpeg \
-        libavformat-dev \
-        libavcodec-dev \
-        libavdevice-dev \
-        libavutil-dev \
-        libavfilter-dev \
-        libswscale-dev \
-        libswresample-dev \
-        pkg-config \
-        python3 \
-        python3-pip \
-        python3.10-dev \
-        git \
-        build-essential \
-        sox \
-        libsox-fmt-all \
-        libsox-fmt-mp3 \
-        libsndfile1-dev && \
-    rm -rf /var/lib/apt/lists/*
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
 
-# 2. Merged PIP dependencies (Pinning pip)
+# 2. Install apt dependencies from SLAM-LLM (which includes ffmpeg, git, etc.)
+RUN set -x \
+    && apt-get update \
+    && apt-get -y install wget curl man git less openssl libssl-dev unzip unar build-essential aria2 tmux vim ninja-build \
+    && apt-get install -y openssh-server sox libsox-fmt-all libsox-fmt-mp3 libsndfile1-dev ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# 3. Install merged PIP dependencies
+# **** THIS STEP IS MODIFIED to pin pip to 23.3.1 ****
 RUN python3 -m pip install --upgrade --no-cache-dir pip==23.3.1 && \
     python3 -m pip install --no-cache-dir \
         pydantic \
         starlette \
-\
         fastapi \
         sentencepiece \
-        torch \
         tslearn \
         h5py \
         uvicorn \
@@ -40,12 +28,10 @@ RUN python3 -m pip install --upgrade --no-cache-dir pip==23.3.1 && \
         numpy \
         accelerate \
         librosa \
-\
         soundfile \
         audioread \
         whisperx \
         hf_transfer \
-        # Added from SLAM-LLM
         packaging \
         editdistance \
         gpustat \
@@ -55,10 +41,12 @@ RUN python3 -m pip install --upgrade --no-cache-dir pip==23.3.1 && \
         tqdm \
         matplotlib \
         scipy \
-        pandas \
-        torchaudio==2.1.0
+        pandas
 
-# 3. Add SLAM-LLM git clone and install steps
+# 4. Install the correct torchaudio version for CUDA 11.8
+RUN pip install --no-cache-dir torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
+
+# 5. Set up the /workspace and install SLAM-LLM and its specific deps
 WORKDIR /workspace
 
 RUN git clone https://github.com/huggingface/transformers.git \
@@ -79,5 +67,5 @@ RUN git clone https://github.com/ddlBoJack/SLAM-LLM.git \
     && cd SLAM-LLM \
     && pip install --no-cache-dir -e .
 
-# 4. Set the working directory back to /app
+# 6. Set the final working directory to /app to match your docker-compose.yml
 WORKDIR /app
