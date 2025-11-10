@@ -13,9 +13,14 @@ RUN set -x \
     && apt-get clean
 
 # 3. Install merged PIP dependencies
-# **** THIS STEP IS MODIFIED to pin pip to 23.3.1 ****
+# **** THIS STEP IS MODIFIED ****
+# - Pin pip to 23.3.1
+# - Pin torch==2.1.0 and torchaudio==2.1.0 to MATCH the base image's CUDA 11.8
+# - Removed 'whisperx' as it conflicts with torch and is not used in this service
 RUN python3 -m pip install --upgrade --no-cache-dir pip==23.3.1 && \
     python3 -m pip install --no-cache-dir \
+        torch==2.1.0 \
+        torchaudio==2.1.0 \
         pydantic \
         starlette \
         fastapi \
@@ -30,7 +35,6 @@ RUN python3 -m pip install --upgrade --no-cache-dir pip==23.3.1 && \
         librosa \
         soundfile \
         audioread \
-        whisperx \
         hf_transfer \
         packaging \
         editdistance \
@@ -43,10 +47,7 @@ RUN python3 -m pip install --upgrade --no-cache-dir pip==23.3.1 && \
         scipy \
         pandas
 
-# 4. Install the correct torchaudio version for CUDA 11.8
-RUN pip install --no-cache-dir torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
-
-# 5. Set up the /workspace and install SLAM-LLM and its specific deps
+# 4. Set up the /workspace and install SLAM-LLM and its specific deps
 WORKDIR /workspace
 
 RUN git clone https://github.com/huggingface/transformers.git \
@@ -67,5 +68,5 @@ RUN git clone https://github.com/ddlBoJack/SLAM-LLM.git \
     && cd SLAM-LLM \
     && pip install --no-cache-dir -e .
 
-# 6. Set the final working directory to /app to match your docker-compose.yml
+# 5. Set the final working directory to /app to match your docker-compose.yml
 WORKDIR /app

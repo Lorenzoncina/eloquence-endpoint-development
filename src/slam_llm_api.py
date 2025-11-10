@@ -32,7 +32,7 @@ print("----------------------------------------------------")
 
 app = FastAPI()
 
-@app.get("/")
+@app.get("/test")
 def read_root():
     return {
         "message": "SLAM-LLM API server is running.",
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     print(f"CUDA available: {torch.cuda.is_available()}")
     print("Starting Uvicorn server on http://0.0.0.0:8080")
     uvicorn.run(
-        "slam_inference_api:app",
+        "slam_llm_api:app",
         host="0.0.0.0",
         port=8080,
         reload=True,
