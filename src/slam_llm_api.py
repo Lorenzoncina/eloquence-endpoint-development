@@ -8,6 +8,7 @@ import logging
 import contextlib
 from omegaconf import DictConfig
 from typing import Optional
+from transformers import GenerationConfig
 
 # --- Dependency Imports ---
 # Ensure these are installed in your environment
@@ -70,12 +71,14 @@ async def lifespan(app: FastAPI):
     model_config = DictConfig({
         "llm_name": "vicuna-7b-v1.5",
         "llm_path": LLM_PATH,
-        "llm_dim": 4096,
+        "llm_dim": 2048,
         "encoder_name": "whisper",
         "encoder_projector_ds_rate": 5,
         "encoder_path": SPEECH_ENCODER_PATH,
         "encoder_dim": 1280,
         "encoder_projector": "linear",
+        "whisper_decode": False,
+        "encoder_path_hf": None
     })
 
     train_config = DictConfig({
@@ -83,6 +86,9 @@ async def lifespan(app: FastAPI):
         "freeze_encoder": True,
         "freeze_llm": True,
         "use_peft": PEFT_CKPT_PATH is not None,
+        "enable_fsdp": False, 
+        "enable_ddp": False,
+        "quantization": False,
     })
     
     # This config is needed by the model's inference method
@@ -98,6 +104,11 @@ async def lifespan(app: FastAPI):
             ckpt_path=PROJECTOR_CKPT_PATH,
             peft_ckpt=PEFT_CKPT_PATH
         )
+
+        logger.info("Adding <audio> special token to tokenizer.")
+        AUDIO_TOKEN = "<audio>"
+        tokenizer.add_special_tokens({"additional_special_tokens": [AUDIO_TOKEN]})
+        model.llm.resize_token_embeddings(len(tokenizer))
         
         model.to(app.state.device)
         model.eval()
@@ -150,34 +161,32 @@ def read_root():
 async def create_transcription(request: AsrRequest, app_request: Request):
     """
     Transcribes an audio file from a given path on the server.
+    This version manually combines embeddings and calls the raw LLM.
     """
     model = app_request.app.state.model
     tokenizer = app_request.app.state.tokenizer
     device = app_request.app.state.device
     
     wav_path = request.source
-    prompt = request.prompt
+    prompt = request.prompt # We will use the user's prompt again
 
     if not os.path.exists(wav_path):
         return AsrResponse(key=request.key, transcription="<ERROR: Audio file not found on server>")
 
     # --- Inference Logic ---
-    # This logic is adapted from `slam_model_asr.py`'s `inference` method
-    # We re-implement it here to correctly slice the generated output.
     try:
         # 1. Load and process audio
         audio_raw = whisper.load_audio(wav_path)
         audio_raw = whisper.pad_or_trim(audio_raw)
-
-        mel_size = app_request.app.state.dataset_config.get("mel_size", 128) # from config
+        mel_size = app_request.app.state.dataset_config.get("mel_size", 128)
         audio_mel = (
             whisper.log_mel_spectrogram(audio_raw, n_mels=mel_size)
             .permute(1, 0)[None, :, :]
             .to(device)
         )
 
-        # 2. Get audio embeddings
         with torch.no_grad():
+            # 2. Get audio embeddings
             encoder_outs = model.encoder.extract_variable_length_features(
                 audio_mel.permute(0, 2, 1)
             )
@@ -186,7 +195,6 @@ async def create_transcription(request: AsrRequest, app_request: Request):
             if model.model_config.encoder_projector == "linear":
                 encoder_outs = model.encoder_projector(encoder_outs)
             elif model.model_config.encoder_projector == "q-former":
-                # (Logic for q-former if needed, based on slam_model_asr.py)
                 audio_mel_post_mask = torch.ones(
                     encoder_outs.size()[:-1], dtype=torch.long
                 ).to(encoder_outs.device)
@@ -205,35 +213,46 @@ async def create_transcription(request: AsrRequest, app_request: Request):
                 inputs_embeds = model.llm.model.model.model.embed_tokens(prompt_ids)
 
             # 6. Combine audio and text embeddings: [audio, prompt]
-            inputs_embeds = torch.cat((encoder_outs, inputs_embeds), dim=1)
-            attention_mask = torch.ones(inputs_embeds.size()[:-1], dtype=torch.long).to(
+            # THIS IS THE CRITICAL STEP
+            combined_embeds = torch.cat((encoder_outs, inputs_embeds), dim=1)
+            attention_mask = torch.ones(combined_embeds.size()[:-1], dtype=torch.long).to(
                 device
             )
             
-            # Store length of input to slice it from the output
-            input_seq_len = attention_mask.shape[1]
-
             # 7. Generate
-            # Using num_beams=4 as suggested by `decode_beam4` in your script
-            generation_kwargs = {
-                "max_new_tokens": 256,
-                "num_beams": 4,
-                "do_sample": False,
-                "early_stopping": True,
-            }
-
-            generated_ids = model.generate(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                **generation_kwargs
+            # We call model.llm.generate() directly and use GenerationConfig
+            generation_config = GenerationConfig(
+                max_new_tokens=256,
+                min_new_tokens=2,
+                num_beams=4,
+                do_sample=False,
+                early_stopping=True,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                bos_token_id=tokenizer.bos_token_id,
+                repetition_penalty=1.2,
+                no_repeat_ngram_size=3,     # <-- STOPS THE LOOP
             )
 
+            logger.info(f"[DEBUG] Manually Combined Embeds Shape: {combined_embeds.shape}")
+
+            generated_ids = model.llm.generate(
+                inputs_embeds=combined_embeds,
+                attention_mask=attention_mask,
+                generation_config=generation_config
+            )
+            
+            logger.info(f"[DEBUG] Generated IDs Shape: {generated_ids.shape}")
+
             # 8. Decode
-            # Slice the output to get only the generated text (after the input)
-            generated_text_ids = generated_ids[0, input_seq_len:]
+            # When passing inputs_embeds, .generate() ONLY returns NEW tokens.
+            # We do NOT slice.
+            generated_text_ids = generated_ids[0]
             transcription = tokenizer.decode(
                 generated_text_ids, skip_special_tokens=True
             ).strip()
+            
+            logger.info(f"[DEBUG] Final Transcription: {transcription}")
 
         logger.info(f"Transcription complete for key: {request.key}")
         return AsrResponse(key=request.key, transcription=transcription)
