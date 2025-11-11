@@ -3,20 +3,40 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: eloquence-endpoint:latest
+    image: eloquence-endpoint:latest 
+    
     volumes:
+      # --- 1. Mount local code for live-reloading ---
       - ./src:/app
+      
+      # --- 2. Mount local test audio ---
+      - ./test_audio:/test_audio
+      
+      # --- 3. Mount DEV model paths ---
+      #    <PATH_ON_THE_SERVER>          : <PATH_INSIDE_CONTAINER>
+      - /raid/home/stek/lconcina/SLAM-LLM-DVC-/models/     : /models
+      - /raid/home/stek/lconcina/SLAM-LLM-DVC-/train_output/EuroLLM-1.7B-Instruct-lora8r32a-multilingual-linear/only_checkpoint : /checkpoints
+      
     working_dir: /app
     ports:
       - "8080:8080"
+      
     environment:
       - HF_TOKEN=${HF_TOKEN}
       
-      # --- THIS IS THE FIX ---
-      # Set the complete, static library path.
-      # This combines the base image's NVIDIA paths with the CUDA path.
+      # --- 4. Point the API to the generic CONTAINER paths ---
+      # (Adjust the subpaths here if needed)
+      - LLM_PATH=/models/eurollm-1.7b
+      - SPEECH_ENCODER_PATH=/models/whisper-large-v3-turbo/
+      - PROJECTOR_CKPT_PATH=/checkpoints/model.pt
+      
       - LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
     
-    #entrypoint: ["python3", "whisper_api_python.py"]
     entrypoint: ["python3", "slam_llm_api.py"]
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
