@@ -13,7 +13,7 @@ from typing import Optional
 # Ensure these are installed in your environment
 try:
     import slam_llm
-    import fairseq
+    #import fairseq
     import peft
     import whisper  # Added import for audio processing
     from omegaconf import OmegaConf
@@ -29,12 +29,13 @@ SLAM_LLM_EXAMPLE_PATH = "/workspace/SLAM-LLM/examples/asr_librispeech"
 if SLAM_LLM_EXAMPLE_PATH not in sys.path:
     sys.path.append(SLAM_LLM_EXAMPLE_PATH)
 
+# --- SLAM-LLM Example Code Import ---
 try:
-    # Import the factory function from the example code
-    from model.slam_model_asr import model_factory
-except ImportError:
-    print(f"\n[ERROR] Failed to import 'model_factory' from {SLAM_LLM_EXAMPLE_PATH}")
-    print("Please ensure the 'SLAM-LLM' directory is correctly placed relative to your API.")
+    # Import from our new, locally-copied file
+    from model_factory_local import model_factory
+except ImportError as e:
+    print(f"\n[ERROR] Failed to import 'model_factory' from model_factory_local.py")
+    print(f"Details: {e}")
     sys.exit(1)
 
 # --- Configuration ---

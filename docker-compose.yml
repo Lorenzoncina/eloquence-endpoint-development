@@ -14,8 +14,8 @@ services:
       
       # --- 3. Mount DEV model paths ---
       #    <PATH_ON_THE_SERVER>          : <PATH_INSIDE_CONTAINER>
-      - /raid/home/stek/lconcina/SLAM-LLM-DVC-/models/     : /models
-      - /raid/home/stek/lconcina/SLAM-LLM-DVC-/train_output/EuroLLM-1.7B-Instruct-lora8r32a-multilingual-linear/only_checkpoint : /checkpoints
+      - /raid/home/stek/lconcina/SLAM-LLM-DVC-/models/:/models
+      - /raid/home/stek/lconcina/SLAM-LLM-DVC-/train_output/EuroLLM-1.7B-Instruct-lora8r32a-multilingual-linear/only_checkpoint:/checkpoints
       
     working_dir: /app
     ports:
@@ -27,7 +27,7 @@ services:
       # --- 4. Point the API to the generic CONTAINER paths ---
       # (Adjust the subpaths here if needed)
       - LLM_PATH=/models/eurollm-1.7b
-      - SPEECH_ENCODER_PATH=/models/whisper-large-v3-turbo/
+      - SPEECH_ENCODER_PATH=/models/large-v3-turbo.pt
       - PROJECTOR_CKPT_PATH=/checkpoints/model.pt
       
       - LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64

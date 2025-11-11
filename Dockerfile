@@ -1,5 +1,5 @@
 # 1. Use the SLAM-LLM base image, which has the correct CUDA/PyTorch environment
-FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel
 
 USER root
 ARG DEBIAN_FRONTEND=noninteractive
@@ -45,7 +45,9 @@ RUN python3 -m pip install --upgrade --no-cache-dir pip==23.3.1 && \
         tqdm \
         matplotlib \
         scipy \
-        pandas
+        pandas \
+        openai-whisper==20231117 \ 
+        deepspeed
 
 # 4. Set up the /workspace and install SLAM-LLM and its specific deps
 WORKDIR /workspace
