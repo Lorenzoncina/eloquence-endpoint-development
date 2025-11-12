@@ -56,7 +56,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"Using device: {app.state.device}")
 
     # 2. Get Model Paths from Environment Variables
-    # These paths are based on your decode.sh script
     LLM_PATH = os.getenv("LLM_PATH", "/nfs/maziyang.mzy/models/vicuna-7b-v1.5")
     SPEECH_ENCODER_PATH = os.getenv("SPEECH_ENCODER_PATH", "/nfs/maziyang.mzy/models/Whisper/large-v3.pt")
     PROJECTOR_CKPT_PATH = os.getenv("PROJECTOR_CKPT_PATH", "/root/tmp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-largev3-20240426/asr_epoch_1_step_1000/model.pt")
@@ -69,7 +68,7 @@ async def lifespan(app: FastAPI):
 
     # 3. Define Model Configuration (from decode...sh)
     model_config = DictConfig({
-        "llm_name": "vicuna-7b-v1.5",
+        "llm_name": "eurollm-1.7b",
         "llm_path": LLM_PATH,
         "llm_dim": 2048,
         "encoder_name": "whisper",
@@ -161,14 +160,18 @@ def read_root():
 async def create_transcription(request: AsrRequest, app_request: Request):
     """
     Transcribes an audio file from a given path on the server.
-    This version manually combines embeddings and calls the raw LLM.
+    
+    This version uses the [TEXT, AUDIO] embedding order, which is
+    the last remaining combination to test.
     """
     model = app_request.app.state.model
     tokenizer = app_request.app.state.tokenizer
     device = app_request.app.state.device
     
     wav_path = request.source
-    prompt = request.prompt # We will use the user's prompt again
+    
+    # --- FIX 1: Use the correct raw prompt for EuroLLM ---
+    prompt_text = "Transcribe speech to text. "
 
     if not os.path.exists(wav_path):
         return AsrResponse(key=request.key, transcription="<ERROR: Audio file not found on server>")
@@ -201,7 +204,7 @@ async def create_transcription(request: AsrRequest, app_request: Request):
                 encoder_outs = model.encoder_projector(encoder_outs, audio_mel_post_mask)
             
             # 4. Prepare text prompt
-            formatted_prompt = "USER: {}\n ASSISTANT:".format(prompt)
+            formatted_prompt = prompt_text
             prompt_ids = tokenizer.encode(formatted_prompt, return_tensors="pt").to(device)
 
             # 5. Get text embeddings
@@ -212,15 +215,13 @@ async def create_transcription(request: AsrRequest, app_request: Request):
             else:
                 inputs_embeds = model.llm.model.model.model.embed_tokens(prompt_ids)
 
-            # 6. Combine audio and text embeddings: [audio, prompt]
-            # THIS IS THE CRITICAL STEP
-            combined_embeds = torch.cat((encoder_outs, inputs_embeds), dim=1)
+            # --- FIX 2: Reverse concatenation order to [TEXT, AUDIO] ---
+            combined_embeds = torch.cat((inputs_embeds, encoder_outs), dim=1)
             attention_mask = torch.ones(combined_embeds.size()[:-1], dtype=torch.long).to(
                 device
             )
             
             # 7. Generate
-            # We call model.llm.generate() directly and use GenerationConfig
             generation_config = GenerationConfig(
                 max_new_tokens=256,
                 min_new_tokens=2,
@@ -231,7 +232,7 @@ async def create_transcription(request: AsrRequest, app_request: Request):
                 eos_token_id=tokenizer.eos_token_id,
                 bos_token_id=tokenizer.bos_token_id,
                 repetition_penalty=1.2,
-                no_repeat_ngram_size=3,     # <-- STOPS THE LOOP
+                no_repeat_ngram_size=3,
             )
 
             logger.info(f"[DEBUG] Manually Combined Embeds Shape: {combined_embeds.shape}")
@@ -245,12 +246,14 @@ async def create_transcription(request: AsrRequest, app_request: Request):
             logger.info(f"[DEBUG] Generated IDs Shape: {generated_ids.shape}")
 
             # 8. Decode
-            # When passing inputs_embeds, .generate() ONLY returns NEW tokens.
-            # We do NOT slice.
             generated_text_ids = generated_ids[0]
             transcription = tokenizer.decode(
                 generated_text_ids, skip_special_tokens=True
             ).strip()
+            
+            # Clean up the output, as it might still include the prompt
+            if transcription.startswith(prompt_text):
+                transcription = transcription[len(prompt_text):].strip()
             
             logger.info(f"[DEBUG] Final Transcription: {transcription}")
 
