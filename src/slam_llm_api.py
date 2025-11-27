@@ -1,11 +1,13 @@
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, File, UploadFile, Form
 from pydantic import BaseModel
 import torch
 import os
 import sys
 import logging
 import contextlib
+import shutil
+import uuid
 from omegaconf import DictConfig
 from typing import Optional
 from transformers import GenerationConfig
@@ -80,17 +82,11 @@ async def lifespan(app: FastAPI):
 
     try:
         # 3. Load Model
-        # CRITICAL: We pass ckpt_path to load the Projector. 
-        # If model.pt also contains PEFT weights, `load_state_dict` in model_factory will try to load them.
         model, tokenizer = model_factory(
             train_config,
             model_config,
             ckpt_path=PROJECTOR_CKPT_PATH,
         )
-        
-        # CRITICAL FIX: Do NOT add <audio> token or resize embeddings. 
-        # The training likely relied on standard tokens or placeholders. 
-        # Resizing invalidates weights if the checkpoint didn't have this token.
         
         # Ensure PAD is EOS to prevent infinite generation
         if tokenizer.pad_token_id is None:
@@ -116,34 +112,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-class AsrRequest(BaseModel):
-    key: str
-    source: str 
-    prompt: Optional[str] = "Transcribe speech to text."
-
 class AsrResponse(BaseModel):
     key: str
     transcription: str
 
+# --- API Endpoint (MODIFIED FOR FILE UPLOAD) ---
 @app.post("/v1/transcribe", response_model=AsrResponse)
-async def create_transcription(request: AsrRequest, app_request: Request):
-    model = app_request.app.state.model
-    tokenizer = app_request.app.state.tokenizer
-    device = app_request.app.state.device
+async def create_transcription(
+    request: Request,
+    key: str = Form(...),
+    file: UploadFile = File(...)
+):
+    model = request.app.state.model
+    tokenizer = request.app.state.tokenizer
+    device = request.app.state.device
     
-    # 1. Chat Template Construction
-    # Matches SLAM-LLM SpeechDatasetJsonl format EXACTLY
-    raw_prompt = "Transcribe speech to text. "
-    prompt_text = f"USER: {raw_prompt}\n ASSISTANT:"
+    # Generate a unique temp filename
+    temp_filename = f"/tmp/{uuid.uuid4()}_{file.filename}"
     
-    if not os.path.exists(request.source):
-        return AsrResponse(key=request.key, transcription="<ERROR: File not found>")
-
     try:
-        # --- Audio Encoding ---
-        audio_raw = whisper.load_audio(request.source)
+        # 1. Save the uploaded file to disk
+        with open(temp_filename, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        if not os.path.exists(temp_filename):
+            return AsrResponse(key=key, transcription="<ERROR: File upload failed>")
+
+        # 2. Prepare Prompt
+        raw_prompt = "Transcribe speech to text. "
+        prompt_text = f"USER: {raw_prompt}\n ASSISTANT:"
+
+        # 3. Audio Encoding (Using the temp file)
+        audio_raw = whisper.load_audio(temp_filename)
         audio_raw = whisper.pad_or_trim(audio_raw)
-        mel_size = app_request.app.state.dataset_config.get("mel_size", 128)
+        mel_size = request.app.state.dataset_config.get("mel_size", 128)
         audio_mel = (
             whisper.log_mel_spectrogram(audio_raw, n_mels=mel_size)
             .permute(1, 0)[None, :, :].to(device)
@@ -154,30 +156,27 @@ async def create_transcription(request: AsrRequest, app_request: Request):
             if model.model_config.encoder_projector == "linear":
                 encoder_outs = model.encoder_projector(encoder_outs)
             
-            # --- Text Encoding ---
-            # add_special_tokens=True ensures BOS token is present (e.g. <s>)
+            # 4. Text Encoding
             prompt_ids = tokenizer.encode(prompt_text, return_tensors="pt", add_special_tokens=True).to(device)
             
-            # Embed Text
             if hasattr(model.llm.model, "embed_tokens"):
                 inputs_embeds = model.llm.model.embed_tokens(prompt_ids)
-            elif hasattr(model.llm.model.model, "embed_tokens"): # Adapters often wrap logic
+            elif hasattr(model.llm.model.model, "embed_tokens"): 
                 inputs_embeds = model.llm.model.model.embed_tokens(prompt_ids)
             else:
                 inputs_embeds = model.llm.model.model.model.embed_tokens(prompt_ids)
 
-            # --- Concatenation: [Audio] + [Text] ---
+            # 5. Concatenation & Generation
             combined_embeds = torch.cat((encoder_outs, inputs_embeds), dim=1)
             attention_mask = torch.ones(combined_embeds.size()[:-1], dtype=torch.long).to(device)
 
-            # --- Generation ---
             generation_config = GenerationConfig(
                 max_new_tokens=256,
-                min_new_tokens=1, # Changed from 2 to 1 to allow short answers
-                num_beams=1,      # Greedy decoding is strictly more stable for stopping
+                min_new_tokens=1,
+                num_beams=1,
                 do_sample=False,
                 use_cache=True,
-                pad_token_id=tokenizer.eos_token_id, # Force PAD to EOS behavior
+                pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 bos_token_id=tokenizer.bos_token_id,
             )
@@ -190,16 +189,23 @@ async def create_transcription(request: AsrRequest, app_request: Request):
 
             raw_transcription = tokenizer.decode(generated_ids[0], skip_special_tokens=True).strip()
             
-            # --- Post-Processing Failsafe ---
-            # If the model still outputs the garbage char '♀', cut it off manually
+            # Post-Processing
             if '♀' in raw_transcription:
                 raw_transcription = raw_transcription.split('♀')[0].strip()
 
-            return AsrResponse(key=request.key, transcription=raw_transcription)
+            return AsrResponse(key=key, transcription=raw_transcription)
 
     except Exception as e:
         logger.error(f"Inference error: {e}", exc_info=True)
-        return AsrResponse(key=request.key, transcription=f"<ERROR: {str(e)}>" )
+        return AsrResponse(key=key, transcription=f"<ERROR: {str(e)}>" )
+        
+    finally:
+        # 6. Cleanup: Remove the temp file to save space
+        if os.path.exists(temp_filename):
+            try:
+                os.remove(temp_filename)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     uvicorn.run("slam_llm_api:app", host="0.0.0.0", port=8080, reload=False)

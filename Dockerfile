@@ -72,3 +72,4 @@ RUN git clone https://github.com/ddlBoJack/SLAM-LLM.git \
 
 # 5. Set the final working directory to /app to match your docker-compose.yml
 WORKDIR /app
+COPY ./src /app
